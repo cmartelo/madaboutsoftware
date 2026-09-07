@@ -1,107 +1,136 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
-type Run = {
-  lane: number;
-  score: number;
-  lives: number;
-  elapsed: number;
-  spawn: number;
-  items: { lane: number; z: number; good: boolean }[];
-};
-const fresh = (): Run => ({
-  lane: 1,
-  score: 0,
-  lives: 3,
-  elapsed: 0,
-  spawn: 0,
-  items: [],
-});
+import Image from 'next/image';
+import Link from 'next/link';
+import { FrameClock, interpolate } from '@/lib/frame-clock';
+import {
+  createRun,
+  FIXED_TICK,
+  MODES,
+  move,
+  multiplier,
+  pulse,
+  roundTheme,
+  sector,
+  step,
+  type Event,
+  type GameMode,
+  type Run,
+} from '@/lib/game';
+
+type Burst = Event & { age: number };
+const playableModes: GameMode[] = ['sprint', 'classic', 'endless'];
+const activePhase = (run: Run) =>
+  run.phase === 'playing' || run.phase === 'paused';
+
 export default function Home() {
   const canvas = useRef<HTMLCanvasElement>(null),
     board = useRef<HTMLDivElement>(null),
-    run = useRef(fresh());
-  const touch = useRef<number | null>(null);
-  const [mode, setMode] = useState<'ready' | 'playing' | 'paused' | 'over'>(
-    'ready',
-  );
-  const [hud, setHud] = useState({ score: 0, lives: 3, time: 30 });
-  const bursts = useRef<{ lane: number; good: boolean; age: number }[]>([]),
+    run = useRef(createRun('sprint')),
+    clock = useRef(new FrameClock(FIXED_TICK));
+  const touch = useRef<number | null>(null),
+    bursts = useRef<Burst[]>([]),
     audio = useRef<AudioContext | null>(null),
-    master = useRef<GainNode | null>(null),
-    enabled = useRef(true);
-  const [sound, setSound] = useState(true);
+    soundRef = useRef(true);
+  const [hud, setHud] = useState<Run>(() => createRun('sprint')),
+    [selected, setSelected] = useState<GameMode>('sprint'),
+    [sound, setSound] = useState(true);
+
+  const publish = () => setHud({ ...run.current, items: [] });
   const unlock = () => {
     try {
-      if (!audio.current) {
-        audio.current = new AudioContext();
-        master.current = audio.current.createGain();
-        master.current.gain.value = enabled.current ? 0.16 : 0;
-        master.current.connect(audio.current.destination);
-      }
+      audio.current ??= new AudioContext();
       void audio.current.resume().catch(() => {});
     } catch {}
   };
-  const blip = (good: boolean) => {
-    const a = audio.current,
-      bus = master.current;
-    if (!enabled.current || !a || !bus || a.state !== 'running') return;
-    (good ? [784, 1047, 1568] : [180, 95, 48]).forEach((hz, i) => {
-      const o = a.createOscillator(),
-        g = a.createGain(),
-        t = a.currentTime + i * 0.055;
-      o.type = good ? 'square' : 'sawtooth';
-      o.frequency.setValueAtTime(hz, t);
-      if (!good) o.frequency.exponentialRampToValueAtTime(hz * 0.45, t + 0.14);
-      g.gain.setValueAtTime(0, t);
-      g.gain.linearRampToValueAtTime(0.3, t + 0.004);
-      g.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
-      o.connect(g);
-      g.connect(bus);
-      o.start(t);
-      o.stop(t + 0.16);
-      o.onended = () => {
-        o.disconnect();
-        g.disconnect();
+  const playSound = (kind: Event['kind']) => {
+    const a = audio.current;
+    if (!soundRef.current || !a || a.state !== 'running' || kind === 'miss')
+      return;
+    const frequencies =
+      kind === 'noise'
+        ? [130, 65]
+        : kind === 'streak'
+          ? [660, 880, 1100, 1320]
+          : kind === 'pulse'
+            ? [220, 440, 880]
+            : kind === 'shield'
+              ? [440, 660, 880]
+              : [660 + multiplier(run.current) * 110, 990];
+    frequencies.forEach((frequency, i) => {
+      const oscillator = a.createOscillator(),
+        gain = a.createGain(),
+        time = a.currentTime + i * 0.045;
+      oscillator.type = kind === 'noise' ? 'sawtooth' : 'triangle';
+      oscillator.frequency.setValueAtTime(frequency, time);
+      gain.gain.setValueAtTime(0.055, time);
+      gain.gain.exponentialRampToValueAtTime(0.001, time + 0.13);
+      oscillator.connect(gain);
+      gain.connect(a.destination);
+      oscillator.start(time);
+      oscillator.stop(time + 0.14);
+      oscillator.onended = () => {
+        oscillator.disconnect();
+        gain.disconnect();
       };
     });
   };
-  const toggleSound = () => {
-    enabled.current = !enabled.current;
-    setSound(enabled.current);
+  const emit = (events: Event[]) => {
+    for (const event of events) {
+      if (event.kind !== 'round') bursts.current.push({ ...event, age: 0 });
+      playSound(event.kind);
+    }
+  };
+  const start = (mode: GameMode = selected) => {
+    clock.current.reset();
     unlock();
-    if (master.current && audio.current)
-      master.current.gain.setTargetAtTime(
-        enabled.current ? 0.16 : 0,
-        audio.current.currentTime,
-        0.01,
-      );
+    run.current = createRun(mode);
+    run.current.phase = 'playing';
+    bursts.current = [];
+    if (mode !== 'classic') emit([{ lane: 1, kind: 'round', text: 'ROUND 1' }]);
+    publish();
+    board.current?.focus({ preventScroll: true });
+  };
+  const steer = (direction: number) => move(run.current, direction);
+  const fire = () => {
+    emit(pulse(run.current));
+    publish();
+  };
+  const pause = () => {
+    clock.current.reset();
+    const current = run.current;
+    if (current.phase === 'playing') current.phase = 'paused';
+    else if (current.phase === 'paused') {
+      unlock();
+      current.phase = 'playing';
+      board.current?.focus({ preventScroll: true });
+    }
+    publish();
+  };
+  const toggleSound = () => {
+    soundRef.current = !soundRef.current;
+    setSound(soundRef.current);
+    unlock();
     try {
-      localStorage.setItem('signal-run-sound', String(enabled.current));
+      localStorage.setItem('signalrun.sound', String(soundRef.current));
     } catch {}
   };
+
   useEffect(() => {
     try {
-      enabled.current = localStorage.getItem('signal-run-sound') !== 'false';
-      setSound(enabled.current);
+      const stored =
+        localStorage.getItem('signalrun.sound') ??
+        localStorage.getItem('signal-run-sound');
+      soundRef.current = stored !== 'false';
+      setSound(soundRef.current);
     } catch {}
     return () => {
       void audio.current?.close().catch(() => {});
       audio.current = null;
-      master.current = null;
     };
   }, []);
-  const start = () => {
-    unlock();
-    bursts.current = [];
-    run.current = fresh();
-    setHud({ score: 0, lives: 3, time: 30 });
-    setMode('playing');
-    board.current?.focus({ preventScroll: true });
-  };
-  const move = (d: number) => {
-    run.current.lane = Math.max(0, Math.min(2, run.current.lane + d));
-  };
+
   useEffect(() => {
     const context = (
       document as Document & {
@@ -121,64 +150,121 @@ export default function Home() {
     ).modelContext;
     if (!context) return;
     const lifecycle = new AbortController();
-    const register = (name: string, description: string, inputSchema: object) =>
-      context.registerTool(
-        {
-          name,
-          description,
-          inputSchema,
-          annotations: { readOnlyHint: false },
-          execute(input) {
-            if (
-              !input ||
-              typeof input !== 'object' ||
-              Array.isArray(input) ||
-              Object.keys(input).length
-            )
-              throw new Error('Expected an empty object');
-            flushSync(() => start());
-            return {
-              mode: 'classic',
-              status: 'playing',
-              score: 0,
-              lives: 3,
-              time: 30,
-            };
-          },
-        },
-        { signal: lifecycle.signal },
-      );
+    const startFromTool = (input: unknown) => {
+      const mode =
+        input &&
+        typeof input === 'object' &&
+        !Array.isArray(input) &&
+        'mode' in input &&
+        playableModes.includes(input.mode as GameMode)
+          ? (input.mode as GameMode)
+          : 'sprint';
+      flushSync(() => {
+        setSelected(mode);
+        start(mode);
+      });
+      return {
+        mode,
+        phase: run.current.phase,
+        score: run.current.score,
+        lives: run.current.lives,
+      };
+    };
     try {
-      Promise.resolve(
-        register(
-          'start_signal_run',
-          'Start or restart the visible 30-second Signal Run classic teaser. Resets score and lives.',
-          { type: 'object', properties: {}, additionalProperties: false },
+      void Promise.resolve(
+        context.registerTool(
+          {
+            name: 'start_signalrun',
+            description:
+              'Start or restart the visible SignalRun teaser in sprint, classic, or endless mode.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                mode: { type: 'string', enum: playableModes },
+              },
+              additionalProperties: false,
+            },
+            annotations: { readOnlyHint: false },
+            execute: startFromTool,
+          },
+          { signal: lifecycle.signal },
         ),
       ).catch(() => {});
-      Promise.resolve(
-        register(
-          'start_signalrun',
-          'Start or restart the visible SignalRun classic teaser. Resets score and lives.',
-          { type: 'object', properties: {}, additionalProperties: false },
+      void Promise.resolve(
+        context.registerTool(
+          {
+            name: 'start_signal_run',
+            description:
+              'Start or restart the visible Signal Run teaser. Defaults to sprint mode.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                mode: { type: 'string', enum: playableModes },
+              },
+              additionalProperties: false,
+            },
+            annotations: { readOnlyHint: false },
+            execute: startFromTool,
+          },
+          { signal: lifecycle.signal },
         ),
       ).catch(() => {});
     } catch {}
     return () => lifecycle.abort();
   }, []);
+
   useEffect(() => {
-    const c = canvas.current;
-    if (!c) return;
-    const ctx = c.getContext('2d');
-    if (!ctx) return;
+    const c = canvas.current,
+      ctx = c?.getContext('2d');
+    if (!c || !ctx) return;
     let frame = 0,
-      last = 0;
-    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)');
-    let smoothLane = 1;
+      last = 0,
+      update = 0,
+      smoothLane = 1,
+      previousRun = run.current,
+      previousElapsed = 0;
+    const previousPositions = new Map<number, number>(),
+      reduced = matchMedia('(prefers-reduced-motion: reduce)');
     const draw = (now: number) => {
-      const dt = last ? Math.min((now - last) / 1000, 0.04) : 0;
+      const dt = last ? Math.min((now - last) / 1000, 0.05) : 0;
       last = now;
-      const w = c.clientWidth,
+      const current = run.current,
+        before = current.phase;
+      if (current !== previousRun) {
+        previousRun = current;
+        previousPositions.clear();
+        previousElapsed = current.elapsed;
+        smoothLane = current.lane;
+      }
+      const { steps, alpha } = clock.current.advance(
+        now,
+        current.phase === 'playing',
+      );
+      const events: Event[] = [];
+      for (let tick = 0; tick < steps && current.phase === 'playing'; tick++) {
+        previousPositions.clear();
+        for (const item of current.items)
+          previousPositions.set(item.id, item.z);
+        previousElapsed = current.elapsed;
+        events.push(...step(current, FIXED_TICK));
+      }
+      emit(events);
+      update += dt;
+      if (
+        (current.phase === 'playing' && update > 0.1) ||
+        before !== current.phase ||
+        events.length
+      ) {
+        publish();
+        update = 0;
+      }
+      const renderAlpha = current.phase === 'playing' ? alpha : 1,
+        renderElapsed = interpolate(
+          previousElapsed,
+          current.elapsed,
+          renderAlpha,
+        ),
+        w = c.clientWidth,
         h = c.clientHeight,
         dpr = Math.min(devicePixelRatio || 1, 2);
       if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) {
@@ -187,176 +273,192 @@ export default function Home() {
       }
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, w, h);
-      const r = run.current;
-      if (mode === 'playing') {
-        r.elapsed += dt;
-        r.spawn += dt;
-        if (r.spawn > 0.62) {
-          r.spawn = 0;
-          r.items.push({
-            lane: Math.floor(Math.random() * 3),
-            z: 0,
-            good: Math.random() > 0.32,
-          });
-        }
-        for (const item of r.items) {
-          item.z += dt * (0.42 + r.elapsed * 0.004);
-          if (item.z >= 0.91 && item.z < 2) {
-            if (item.lane === r.lane) {
-              if (item.good) r.score += 100;
-              else r.lives--;
-              bursts.current.push({ lane: item.lane, good: item.good, age: 0 });
-              blip(item.good);
-            }
-            item.z = 3;
-          }
-        }
-        r.items = r.items.filter((i) => i.z < 2);
-        setHud({
-          score: r.score,
-          lives: Math.max(0, r.lives),
-          time: Math.max(0, Math.ceil(30 - r.elapsed)),
-        });
-        if (r.elapsed >= 30 || r.lives <= 0) setMode('over');
-      }
-      if (mode !== 'paused') for (const b of bursts.current) b.age += dt;
-      bursts.current = bursts.current.filter((b) => b.age < 0.8);
-      ctx.save();
-      const impact = bursts.current.find((b) => !b.good && b.age < 0.24);
-      if (impact && !reduced.matches) {
-        const strength = 5 * (1 - impact.age / 0.24);
-        ctx.translate(
-          Math.sin(impact.age * 110) * strength,
-          Math.cos(impact.age * 95) * strength,
-        );
-      }
       const point = (x: number, z: number) => ({
-        x: w / 2 + x * (w * 0.105 + z * w * 0.35),
-        y: h * 0.12 + z * z * h * 0.75,
+        x: w / 2 + x * (w * 0.07 + z * w * 0.41),
+        y: h * 0.1 + z * z * h * 0.83,
       });
+      const theme = roundTheme(current),
+        tier = multiplier(current),
+        gradient = ctx.createLinearGradient(0, 0, 0, h);
+      gradient.addColorStop(0, '#111b26');
+      gradient.addColorStop(0.6, '#0a1118');
+      gradient.addColorStop(1, theme.floor);
+      ctx.fillStyle = gradient;
+      ctx.fillRect(0, 0, w, h);
+      ctx.save();
+      const impact = bursts.current.find(
+        (b) => (b.kind === 'noise' || b.kind === 'streak') && b.age < 0.22,
+      );
+      if (impact && !reduced.matches)
+        ctx.translate(
+          Math.sin(impact.age * 130) *
+            (impact.tier === 5 ? 6 : 3) *
+            (1 - impact.age / 0.22),
+          Math.cos(impact.age * 100) * 2,
+        );
       ctx.lineWidth = 1;
-      for (let i = 0; i < 4; i++) {
-        const x = -1 + (i * 2) / 3,
-          a = point(x, 0),
-          b = point(x, 1);
-        ctx.strokeStyle = i === 0 || i === 3 ? '#baff2966' : '#ffffff25';
+      for (let i = -5; i <= 5; i++) {
+        const a = point(i / 3, 0),
+          b = point(i / 3, 1.1);
+        ctx.strokeStyle =
+          i === -3 || i === 3 ? `${theme.color}90` : '#80939820';
         ctx.beginPath();
         ctx.moveTo(a.x, a.y);
         ctx.lineTo(b.x, b.y);
         ctx.stroke();
       }
-      for (let i = 0; i <= 12; i++) {
-        const z = (i / 12 + (mode === 'playing' ? r.elapsed * 0.25 : 0)) % 1,
-          a = point(-1, z),
-          b = point(1, z);
-        ctx.strokeStyle = '#ffffff20';
+      for (let i = 0; i < 18; i++) {
+        const z = (i / 18 + (reduced.matches ? 0 : renderElapsed * 0.19)) % 1,
+          a = point(-1.7, z),
+          b = point(1.7, z);
+        ctx.strokeStyle = '#80a6ad20';
         ctx.beginPath();
         ctx.moveTo(a.x, a.y);
         ctx.lineTo(b.x, b.y);
         ctx.stroke();
       }
       const items =
-        mode === 'ready'
+        current.phase === 'ready'
           ? [
-              { lane: 0, z: 0.6, good: true },
-              { lane: 2, z: 0.36, good: false },
-              { lane: 1, z: 0.2, good: true },
+              { id: 0, lane: 0, z: 0.64, kind: 'signal' as const },
+              { id: 1, lane: 2, z: 0.48, kind: 'noise' as const },
+              { id: 2, lane: 1, z: 0.26, kind: 'shield' as const },
             ]
-          : r.items;
+          : current.items;
       for (const item of items) {
-        const p = point(((item.lane - 1) * 2) / 3, item.z),
-          s = 6 + item.z * 16;
+        const z =
+          current.phase === 'ready'
+            ? item.z
+            : interpolate(
+                previousPositions.get(item.id) ?? 0,
+                item.z,
+                renderAlpha,
+              );
+        const p = point(((item.lane - 1) * 2) / 3, z),
+          size = 5 + z * 19;
         ctx.save();
         ctx.translate(p.x, p.y);
-        ctx.strokeStyle = item.good ? '#baff29' : '#ff6d83';
-        ctx.lineWidth = 2;
-        if (item.good) {
+        ctx.lineWidth = 2.5;
+        ctx.strokeStyle =
+          item.kind === 'signal'
+            ? '#c2ff59'
+            : item.kind === 'noise'
+              ? '#ff718f'
+              : '#75dcff';
+        ctx.shadowColor = ctx.strokeStyle;
+        ctx.shadowBlur = reduced.matches ? 0 : 16;
+        if (item.kind === 'signal') {
           ctx.rotate(Math.PI / 4);
-          ctx.strokeRect(-s / 2, -s / 2, s, s);
+          ctx.strokeRect(-size / 2, -size / 2, size, size);
+          ctx.fillStyle = '#c2ff5920';
+          ctx.fillRect(-size / 2, -size / 2, size, size);
+        } else if (item.kind === 'noise') {
+          ctx.beginPath();
+          ctx.moveTo(-size / 2, -size / 2);
+          ctx.lineTo(size / 2, size / 2);
+          ctx.moveTo(size / 2, -size / 2);
+          ctx.lineTo(-size / 2, size / 2);
+          ctx.stroke();
         } else {
           ctx.beginPath();
-          ctx.moveTo(-s / 2, -s / 2);
-          ctx.lineTo(s / 2, s / 2);
-          ctx.moveTo(s / 2, -s / 2);
-          ctx.lineTo(-s / 2, s / 2);
+          ctx.arc(0, 0, size / 1.5, 0, Math.PI * 2);
           ctx.stroke();
+          ctx.fillStyle = '#75dcff';
+          ctx.fillRect(-3, -3, 6, 6);
         }
         ctx.restore();
       }
       smoothLane = reduced.matches
-        ? r.lane
-        : smoothLane + (r.lane - smoothLane) * Math.min(1, dt * 22);
-      const p = point(((smoothLane - 1) * 2) / 3, 0.92);
-      ctx.fillStyle = '#baff29';
-      ctx.shadowColor = '#baff29';
-      ctx.shadowBlur = 22;
+        ? current.lane
+        : smoothLane + (current.lane - smoothLane) * Math.min(1, dt * 22);
+      const player = point(((smoothLane - 1) * 2) / 3, 0.92);
+      if (tier > 1 && activePhase(current)) {
+        ctx.save();
+        ctx.strokeStyle = theme.color;
+        ctx.shadowColor = theme.color;
+        ctx.shadowBlur = reduced.matches ? 0 : tier * 5;
+        ctx.lineWidth = tier * 2;
+        ctx.globalAlpha = 0.35;
+        ctx.beginPath();
+        ctx.moveTo(player.x, player.y + 12);
+        ctx.lineTo(player.x, Math.min(h, player.y + 24 + tier * 12));
+        ctx.stroke();
+        ctx.restore();
+      }
+      ctx.save();
+      ctx.translate(player.x, player.y);
+      ctx.fillStyle = '#c2ff59';
+      ctx.shadowColor = '#c2ff59';
+      ctx.shadowBlur = reduced.matches ? 0 : 18 + tier * 6;
+      if (current.invincible > 0 && !reduced.matches)
+        ctx.globalAlpha = 0.55 + 0.45 * Math.abs(Math.sin(now / 50));
       ctx.beginPath();
-      ctx.moveTo(p.x, p.y - 14);
-      ctx.lineTo(p.x + 21, p.y + 12);
-      ctx.lineTo(p.x, p.y + 5);
-      ctx.lineTo(p.x - 21, p.y + 12);
+      ctx.moveTo(0, -20);
+      ctx.lineTo(21, 16);
+      ctx.lineTo(0, 7);
+      ctx.lineTo(-21, 16);
       ctx.closePath();
       ctx.fill();
-      ctx.shadowBlur = 0;
-      for (const b of bursts.current) {
-        const origin = point(((b.lane - 1) * 2) / 3, 0.91),
-          life = 1 - b.age / 0.8,
-          color = b.good ? '#baff29' : '#ff6d83';
-        ctx.save();
-        ctx.strokeStyle = color;
-        ctx.fillStyle = color;
-        ctx.globalAlpha = life;
+      if (current.shield) {
+        ctx.strokeStyle = '#75dcff';
         ctx.lineWidth = 2;
-        ctx.shadowColor = color;
-        ctx.shadowBlur = reduced.matches ? 0 : 12;
-        if (!reduced.matches) {
+        ctx.beginPath();
+        ctx.arc(0, 0, 33, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.restore();
+      for (const burst of bursts.current) {
+        if (current.phase !== 'paused') burst.age += dt;
+        const p = point(((burst.lane - 1) * 2) / 3, 0.91),
+          color =
+            burst.kind === 'noise'
+              ? '#ff718f'
+              : burst.kind === 'shield' || burst.kind === 'pulse'
+                ? '#75dcff'
+                : '#c2ff59';
+        ctx.save();
+        ctx.globalAlpha = Math.max(0, 1 - burst.age / 0.85);
+        ctx.fillStyle = color;
+        ctx.strokeStyle = color;
+        if (!reduced.matches && burst.kind !== 'miss') {
           ctx.beginPath();
           ctx.arc(
-            origin.x,
-            origin.y,
-            12 + b.age * (b.good ? 95 : 125),
+            p.x,
+            p.y,
+            10 +
+              burst.age *
+                (burst.kind === 'pulse'
+                  ? w
+                  : burst.kind === 'streak'
+                    ? 140 + (burst.tier ?? 2) * 35
+                    : 100),
             0,
             Math.PI * 2,
           );
           ctx.stroke();
-          for (let i = 0; i < 24; i++) {
-            const angle = (i / 24) * Math.PI * 2,
-              travel = (45 + (i % 5) * 22) * b.age;
-            ctx.save();
-            ctx.translate(
-              origin.x + Math.cos(angle) * travel,
-              origin.y + Math.sin(angle) * travel + b.age * b.age * 65,
-            );
-            ctx.rotate(b.age * (i % 2 ? 5 : -5));
-            if (b.good) {
-              ctx.fillStyle = i % 3 === 0 ? '#ffffff' : color;
-              ctx.fillRect(-2, -2, 4 + life * 2, 4 + life * 2);
-            } else {
-              ctx.beginPath();
-              ctx.moveTo(-5, -2);
-              ctx.lineTo(4, 2);
-              ctx.stroke();
-            }
-            ctx.restore();
-          }
         }
-        ctx.shadowBlur = 0;
-        ctx.font = 'bold 17px monospace';
+        ctx.font = 'bold 14px monospace';
         ctx.textAlign = 'center';
         ctx.fillText(
-          b.good ? '+100' : '−1 LIFE',
-          origin.x,
-          origin.y - 30 - (reduced.matches ? 0 : b.age * 45),
+          burst.text,
+          p.x,
+          p.y -
+            (burst.kind === 'streak' ? 90 : 42) -
+            (reduced.matches ? 0 : burst.age * 40),
         );
         ctx.restore();
       }
+      bursts.current = bursts.current.filter((b) => b.age < 0.85);
       ctx.restore();
       frame = requestAnimationFrame(draw);
     };
     frame = requestAnimationFrame(draw);
     const hide = () => {
-      if ((document.hidden || !document.hasFocus()) && mode === 'playing')
-        setMode('paused');
+      clock.current.reset();
+      if (run.current.phase === 'playing') {
+        run.current.phase = 'paused';
+        publish();
+      }
     };
     document.addEventListener('visibilitychange', hide);
     window.addEventListener('blur', hide);
@@ -365,13 +467,26 @@ export default function Home() {
       document.removeEventListener('visibilitychange', hide);
       window.removeEventListener('blur', hide);
     };
-  }, [mode]);
+  }, []);
+
+  const active = hud.phase === 'playing' || hud.phase === 'paused',
+    duration = MODES[hud.mode].duration,
+    time =
+      duration === Infinity
+        ? `${Math.floor(hud.elapsed)}s`
+        : `${Math.max(0, Math.ceil(duration - hud.elapsed))}s`;
+
   return (
-    <main>
+    <main id="top">
       <header className="nav">
-        <a href="#" aria-label="MadAboutSoftware home">
-          <img src="/logo.png" alt="MadAboutSoftware" />
-        </a>
+        <Link href="/" aria-label="MadAboutSoftware home">
+          <Image
+            src="/logo.png"
+            alt="MadAboutSoftware"
+            width={235}
+            height={72}
+          />
+        </Link>
         <nav>
           <a href="#games">Our games ↗</a>
           <a
@@ -407,25 +522,38 @@ export default function Home() {
           </a>
           <div className="side-note">PRODUCT THINKING × GAME MAKING</div>
         </div>
+        {/* The canvas game is a keyboard-operated application, with native buttons as alternatives. */}
+        {/* oxlint-disable jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/no-noninteractive-tabindex */}
         <div
           className="arcade"
           ref={board}
           tabIndex={0}
-          role="region"
-          aria-label="Signal Run game. Move with left and right arrows or A and D. P or Escape pauses."
+          role="application"
+          aria-label="Signal Run game. Move with left and right arrows or A and D. Space fires pulse. P or Escape pauses."
           onKeyDown={(e) => {
-            if (mode !== 'playing' && mode !== 'paused') return;
             const key = e.key.toLowerCase();
             if (
-              ['arrowleft', 'arrowright', 'a', 'd', 'p', 'escape'].includes(key)
+              (e.target as HTMLElement).tagName === 'BUTTON' &&
+              (key === ' ' || key === 'enter')
+            )
+              return;
+            if (
+              [
+                'arrowleft',
+                'arrowright',
+                'a',
+                'd',
+                ' ',
+                'p',
+                'escape',
+              ].includes(key)
             )
               e.preventDefault();
-            if (mode === 'playing') {
-              if (key === 'arrowleft' || key === 'a') move(-1);
-              if (key === 'arrowright' || key === 'd') move(1);
-            }
-            if (key === 'p' || key === 'escape')
-              setMode(mode === 'paused' ? 'playing' : 'paused');
+            if (key === 'arrowleft' || key === 'a') steer(-1);
+            if (key === 'arrowright' || key === 'd') steer(1);
+            if (e.repeat) return;
+            if (key === ' ') fire();
+            if (key === 'p' || key === 'escape') pause();
           }}
           onPointerDown={(e) => {
             touch.current = e.clientX;
@@ -433,8 +561,7 @@ export default function Home() {
           onPointerUp={(e) => {
             if (touch.current === null) return;
             const distance = e.clientX - touch.current;
-            if (mode === 'playing' && Math.abs(distance) > 22)
-              move(Math.sign(distance));
+            if (Math.abs(distance) > 22) steer(Math.sign(distance));
             touch.current = null;
           }}
           onPointerCancel={() => {
@@ -445,7 +572,9 @@ export default function Home() {
             <span>
               <i /> LAB / 001
             </span>
-            <span>30 SECONDS. ALL INSTINCT.</span>
+            <span>
+              {MODES[active ? hud.mode : selected].name.toUpperCase()} MODE
+            </span>
           </div>
           <div className="game-title">
             <h2>
@@ -454,17 +583,35 @@ export default function Home() {
               <span>RUN</span>
             </h2>
             <p>
-              Catch the signal.
+              Catch signal.
               <br />
-              Dodge the noise.
+              Chain streaks.
             </p>
+          </div>
+          <div className="mode-tabs" aria-label="Signal Run mode">
+            {playableModes.map((mode) => (
+              <button
+                key={mode}
+                aria-pressed={selected === mode}
+                disabled={active}
+                onClick={() => {
+                  setSelected(mode);
+                  run.current = createRun(mode);
+                  bursts.current = [];
+                  publish();
+                }}
+              >
+                {MODES[mode].name}
+              </button>
+            ))}
           </div>
           <div className="hud">
             <div>
-              SCORE<strong>{String(hud.score).padStart(4, '0')}</strong>
+              SCORE<strong>{String(hud.score).padStart(6, '0')}</strong>
             </div>
             <div>
-              TIME<strong>{hud.time}s</strong>
+              {hud.mode === 'endless' ? 'SURVIVED' : 'TIME'}
+              <strong>{time}</strong>
             </div>
             <div>
               LIVES
@@ -476,44 +623,55 @@ export default function Home() {
           </div>
           <canvas
             ref={canvas}
-            aria-label="Three lane playfield. Catch green diamonds for 100 points. Pink crosses cost one life."
+            aria-label="Three lane playfield. Catch green diamonds, avoid pink crosses, collect blue shields."
           />
-          {mode !== 'playing' && (
+          {active && hud.mode !== 'classic' && (
+            <div className="track-status">
+              <span>×{multiplier(hud)}</span>
+              <span style={{ color: roundTheme(hud).color }}>
+                ROUND {String(sector(hud)).padStart(2, '0')}
+              </span>
+            </div>
+          )}
+          {hud.phase !== 'playing' && (
             <div
-              className={`game-overlay ${mode === 'ready' ? 'initial' : ''}`}
+              className={`game-overlay ${
+                hud.phase === 'ready' ? 'initial' : ''
+              }`}
             >
-              {mode === 'over' && (
+              {hud.phase === 'ready' && (
+                <p className="game-hint">{MODES[selected].description}</p>
+              )}
+              {hud.phase === 'over' && (
                 <>
                   <p className="eyebrow">
-                    {hud.lives > 0 ? 'RUN COMPLETE' : 'OUT OF SIGNAL'}
+                    {hud.lives > 0 ? 'TRANSMISSION COMPLETE' : 'OUT OF SIGNAL'}
                   </p>
                   <h3>
                     {hud.score.toLocaleString()} <small>PTS</small>
                   </h3>
                   <p>
-                    {hud.score >= 2000
-                      ? 'Sharp instincts. Nice run.'
-                      : 'One more run? Trust your instincts.'}
+                    Best streak {hud.maxCombo}. Signals caught {hud.collected}.
                   </p>
                 </>
               )}
-              {mode === 'paused' && <h3>Take a breath.</h3>}
+              {hud.phase === 'paused' && <h3>Take a breath.</h3>}
               <button
                 className="play-button"
                 onClick={() =>
-                  mode === 'paused' ? setMode('playing') : start()
+                  hud.phase === 'paused' ? pause() : start(selected)
                 }
               >
-                {mode === 'ready'
-                  ? 'LET’S PLAY'
-                  : mode === 'paused'
+                {hud.phase === 'ready'
+                  ? 'START RUN'
+                  : hud.phase === 'paused'
                     ? 'RESUME RUN'
-                    : 'PLAY AGAIN'}{' '}
+                    : 'RUN IT BACK'}{' '}
                 <span>↗</span>
               </button>
-              {mode === 'ready' && (
+              {hud.phase === 'ready' && (
                 <p className="game-hint">
-                  Catch ◇ · Avoid × · Three lives. Make them count.
+                  Catch ◇ · Avoid × · Shields ◎ · Pulse clears noise.
                 </p>
               )}
             </div>
@@ -522,20 +680,39 @@ export default function Home() {
             <div className="controls">
               <button
                 aria-label="Move left"
-                disabled={mode !== 'playing'}
-                onClick={() => move(-1)}
+                disabled={hud.phase !== 'playing'}
+                onClick={() => steer(-1)}
               >
                 ←
               </button>
               <button
                 aria-label="Move right"
-                disabled={mode !== 'playing'}
-                onClick={() => move(1)}
+                disabled={hud.phase !== 'playing'}
+                onClick={() => steer(1)}
               >
                 →
               </button>
-              <span>ARROWS / A D / TAP</span>
+              <span>ARROWS / A D / SWIPE</span>
             </div>
+            <button
+              className="pulse-button"
+              disabled={
+                hud.phase !== 'playing' ||
+                hud.mode === 'classic' ||
+                hud.energy < 100
+              }
+              onClick={fire}
+            >
+              <span style={{ width: `${hud.energy}%` }} />
+              <b>
+                ϟ{' '}
+                {hud.mode === 'classic'
+                  ? 'CLASSIC'
+                  : hud.energy >= 100
+                    ? 'PULSE'
+                    : `${hud.energy}%`}
+              </b>
+            </button>
             <button
               className="pause sound-toggle"
               aria-label="8-bit sound"
@@ -544,22 +721,19 @@ export default function Home() {
             >
               {sound ? '♪ ON' : '♪ OFF'}
             </button>
-            <button
-              className="pause"
-              disabled={mode === 'ready' || mode === 'over'}
-              onClick={() => setMode(mode === 'paused' ? 'playing' : 'paused')}
-            >
-              {mode === 'paused' ? 'RESUME' : 'PAUSE Ⅱ'}
+            <button className="pause" disabled={!active} onClick={pause}>
+              {hud.phase === 'paused' ? 'RESUME' : 'PAUSE Ⅱ'}
             </button>
           </div>
           <p className="sr-only" aria-live="polite">
-            {mode === 'over'
+            {hud.phase === 'over'
               ? `Run finished. Score ${hud.score}.`
-              : mode === 'paused'
+              : hud.phase === 'paused'
                 ? 'Game paused.'
                 : ''}
           </p>
         </div>
+        {/* oxlint-enable jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/no-noninteractive-tabindex */}
       </section>
       <div className="ticker">
         <span>BUILT ON INSTINCT.</span>
@@ -666,7 +840,7 @@ export default function Home() {
         <div>
           <span>© {new Date().getFullYear()} MadAboutSoftware</span>
           <span>GREAT PRODUCTS. SERIOUS PLAY.</span>
-          <a href="#">BACK TO TOP ↑</a>
+          <a href="#top">BACK TO TOP ↑</a>
         </div>
       </footer>
     </main>
