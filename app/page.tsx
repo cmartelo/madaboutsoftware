@@ -487,9 +487,6 @@ export default function Home() {
       </header>
       <section className="hero">
         <div className="intro">
-          <p className="eyebrow">
-            <i /> INDEPENDENT MINDS. PLAYFUL WORLDS.
-          </p>
           <h1>
             Seriously
             <br />
@@ -765,7 +762,7 @@ export default function Home() {
             enterprise software users.
           </p>
           <p>
-            That experience shapes every game—and every product conversation.
+            That experience shapes every game and every product conversation.
           </p>
           <a
             className="text-link"
@@ -782,11 +779,7 @@ export default function Home() {
           Have a good feeling
           <br />
           about this?{' '}
-          <a
-            href="https://linkedin.com/in/crmp"
-            target="_blank"
-            rel="noreferrer"
-          >
+          <a href="mailto:carlos@madaboutsoftware.com">
             Let’s talk ↗
           </a>
         </p>
