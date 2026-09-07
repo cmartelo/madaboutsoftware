@@ -468,6 +468,7 @@ export default function Home() {
         <Link href="/" aria-label="MadAboutSoftware home">
           <Image
             src="/logo.png"
+            unoptimized
             alt="MadAboutSoftware"
             width={235}
             height={72}
