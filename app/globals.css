@@ -588,71 +588,9 @@ footer > div {
     transition: none;
   }
 }
-.mode-tabs {
-  position: absolute;
-  top: 154px;
-  left: 30px;
-  right: 30px;
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 6px;
-}
-.mode-tabs button {
-  border: 1px solid #4a553c;
-  background: #1c2318;
-  color: #c8d1b8;
-  min-height: 32px;
-  font: 12px monospace;
-}
-.mode-tabs button[aria-pressed='true'] {
-  background: #baff29;
-  color: #111;
-  border-color: #baff29;
-}
-.hud {
-  top: 198px;
-}
-.arcade canvas {
-  top: 250px;
-  height: 278px;
-}
-.track-status {
-  position: absolute;
-  top: 253px;
-  left: 28px;
-  right: 28px;
-  display: flex;
-  justify-content: space-between;
-  pointer-events: none;
-  font: 14px monospace;
-  text-shadow: 0 1px 4px #000;
-}
-.track-status span:first-child {
-  color: #baff29;
-  font-size: 18px;
-}
 .game-hint {
   max-width: 320px;
   line-height: 1.45;
-}
-.pulse-button {
-  position: relative;
-  overflow: hidden;
-  min-width: 112px;
-  min-height: 40px;
-  border: 1px solid #75dcff66;
-  background: #101b20;
-  color: #75dcff;
-  font: 700 12px monospace;
-}
-.pulse-button span {
-  position: absolute;
-  inset: 0 auto 0 0;
-  background: #75dcff24;
-  transition: width 0.2s;
-}
-.pulse-button b {
-  position: relative;
 }
 .game-bottom {
   gap: 10px;
@@ -664,33 +602,12 @@ footer > div {
   white-space: nowrap;
 }
 @media (max-width: 500px) {
-  .mode-tabs {
-    top: 158px;
-    left: 20px;
-    right: 20px;
-  }
-  .hud {
-    top: 202px;
-  }
-  .arcade canvas {
-    top: 255px;
-    height: 260px;
-  }
-  .track-status {
-    top: 257px;
-    left: 20px;
-    right: 20px;
-  }
   .game-bottom {
-    display: grid;
-    grid-template-columns: auto minmax(82px, 1fr) auto auto;
+    display: flex;
     padding: 10px;
   }
   .controls span {
     display: none;
-  }
-  .pulse-button {
-    min-width: 0;
   }
   .pause {
     font-size: 11px;

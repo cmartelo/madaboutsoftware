@@ -10,9 +10,7 @@ import {
   MODES,
   move,
   multiplier,
-  pulse,
   roundTheme,
-  sector,
   step,
   type Event,
   type GameMode,
@@ -20,21 +18,20 @@ import {
 } from '@/lib/game';
 
 type Burst = Event & { age: number };
-const playableModes: GameMode[] = ['sprint', 'classic', 'endless'];
+const DEFAULT_MODE: GameMode = 'classic';
 const activePhase = (run: Run) =>
   run.phase === 'playing' || run.phase === 'paused';
 
 export default function Home() {
   const canvas = useRef<HTMLCanvasElement>(null),
     board = useRef<HTMLDivElement>(null),
-    run = useRef(createRun('sprint')),
+    run = useRef(createRun(DEFAULT_MODE)),
     clock = useRef(new FrameClock(FIXED_TICK));
   const touch = useRef<number | null>(null),
     bursts = useRef<Burst[]>([]),
     audio = useRef<AudioContext | null>(null),
     soundRef = useRef(true);
-  const [hud, setHud] = useState<Run>(() => createRun('sprint')),
-    [selected, setSelected] = useState<GameMode>('sprint'),
+  const [hud, setHud] = useState<Run>(() => createRun(DEFAULT_MODE)),
     [sound, setSound] = useState(true);
 
   const publish = () => setHud({ ...run.current, items: [] });
@@ -82,21 +79,16 @@ export default function Home() {
       playSound(event.kind);
     }
   };
-  const start = (mode: GameMode = selected) => {
+  const start = () => {
     clock.current.reset();
     unlock();
-    run.current = createRun(mode);
+    run.current = createRun(DEFAULT_MODE);
     run.current.phase = 'playing';
     bursts.current = [];
-    if (mode !== 'classic') emit([{ lane: 1, kind: 'round', text: 'ROUND 1' }]);
     publish();
     board.current?.focus({ preventScroll: true });
   };
   const steer = (direction: number) => move(run.current, direction);
-  const fire = () => {
-    emit(pulse(run.current));
-    publish();
-  };
   const pause = () => {
     clock.current.reset();
     const current = run.current;
@@ -151,20 +143,18 @@ export default function Home() {
     if (!context) return;
     const lifecycle = new AbortController();
     const startFromTool = (input: unknown) => {
-      const mode =
-        input &&
-        typeof input === 'object' &&
-        !Array.isArray(input) &&
-        'mode' in input &&
-        playableModes.includes(input.mode as GameMode)
-          ? (input.mode as GameMode)
-          : 'sprint';
+      if (
+        !input ||
+        typeof input !== 'object' ||
+        Array.isArray(input) ||
+        Object.keys(input).length
+      )
+        throw new Error('Expected an empty object');
       flushSync(() => {
-        setSelected(mode);
-        start(mode);
+        start();
       });
       return {
-        mode,
+        mode: DEFAULT_MODE,
         phase: run.current.phase,
         score: run.current.score,
         lives: run.current.lives,
@@ -176,12 +166,10 @@ export default function Home() {
           {
             name: 'start_signalrun',
             description:
-              'Start or restart the visible SignalRun teaser in sprint, classic, or endless mode.',
+              'Start or restart the visible SignalRun classic teaser.',
             inputSchema: {
               type: 'object',
-              properties: {
-                mode: { type: 'string', enum: playableModes },
-              },
+              properties: {},
               additionalProperties: false,
             },
             annotations: { readOnlyHint: false },
@@ -195,12 +183,10 @@ export default function Home() {
           {
             name: 'start_signal_run',
             description:
-              'Start or restart the visible Signal Run teaser. Defaults to sprint mode.',
+              'Start or restart the visible Signal Run classic teaser.',
             inputSchema: {
               type: 'object',
-              properties: {
-                mode: { type: 'string', enum: playableModes },
-              },
+              properties: {},
               additionalProperties: false,
             },
             annotations: { readOnlyHint: false },
@@ -529,7 +515,7 @@ export default function Home() {
           ref={board}
           tabIndex={0}
           role="application"
-          aria-label="Signal Run game. Move with left and right arrows or A and D. Space fires pulse. P or Escape pauses."
+          aria-label="Signal Run game. Move with left and right arrows or A and D. P or Escape pauses."
           onKeyDown={(e) => {
             const key = e.key.toLowerCase();
             if (
@@ -543,7 +529,6 @@ export default function Home() {
                 'arrowright',
                 'a',
                 'd',
-                ' ',
                 'p',
                 'escape',
               ].includes(key)
@@ -552,7 +537,6 @@ export default function Home() {
             if (key === 'arrowleft' || key === 'a') steer(-1);
             if (key === 'arrowright' || key === 'd') steer(1);
             if (e.repeat) return;
-            if (key === ' ') fire();
             if (key === 'p' || key === 'escape') pause();
           }}
           onPointerDown={(e) => {
@@ -572,9 +556,7 @@ export default function Home() {
             <span>
               <i /> LAB / 001
             </span>
-            <span>
-              {MODES[active ? hud.mode : selected].name.toUpperCase()} MODE
-            </span>
+            <span>CLASSIC MODE</span>
           </div>
           <div className="game-title">
             <h2>
@@ -585,33 +567,15 @@ export default function Home() {
             <p>
               Catch signal.
               <br />
-              Chain streaks.
+              Dodge noise.
             </p>
-          </div>
-          <div className="mode-tabs" aria-label="Signal Run mode">
-            {playableModes.map((mode) => (
-              <button
-                key={mode}
-                aria-pressed={selected === mode}
-                disabled={active}
-                onClick={() => {
-                  setSelected(mode);
-                  run.current = createRun(mode);
-                  bursts.current = [];
-                  publish();
-                }}
-              >
-                {MODES[mode].name}
-              </button>
-            ))}
           </div>
           <div className="hud">
             <div>
               SCORE<strong>{String(hud.score).padStart(6, '0')}</strong>
             </div>
             <div>
-              {hud.mode === 'endless' ? 'SURVIVED' : 'TIME'}
-              <strong>{time}</strong>
+              TIME<strong>{time}</strong>
             </div>
             <div>
               LIVES
@@ -623,16 +587,8 @@ export default function Home() {
           </div>
           <canvas
             ref={canvas}
-            aria-label="Three lane playfield. Catch green diamonds, avoid pink crosses, collect blue shields."
+            aria-label="Three lane playfield. Catch green diamonds and avoid pink crosses."
           />
-          {active && hud.mode !== 'classic' && (
-            <div className="track-status">
-              <span>×{multiplier(hud)}</span>
-              <span style={{ color: roundTheme(hud).color }}>
-                ROUND {String(sector(hud)).padStart(2, '0')}
-              </span>
-            </div>
-          )}
           {hud.phase !== 'playing' && (
             <div
               className={`game-overlay ${
@@ -640,7 +596,7 @@ export default function Home() {
               }`}
             >
               {hud.phase === 'ready' && (
-                <p className="game-hint">{MODES[selected].description}</p>
+                <p className="game-hint">{MODES[DEFAULT_MODE].description}</p>
               )}
               {hud.phase === 'over' && (
                 <>
@@ -658,9 +614,7 @@ export default function Home() {
               {hud.phase === 'paused' && <h3>Take a breath.</h3>}
               <button
                 className="play-button"
-                onClick={() =>
-                  hud.phase === 'paused' ? pause() : start(selected)
-                }
+                onClick={() => (hud.phase === 'paused' ? pause() : start())}
               >
                 {hud.phase === 'ready'
                   ? 'START RUN'
@@ -671,7 +625,7 @@ export default function Home() {
               </button>
               {hud.phase === 'ready' && (
                 <p className="game-hint">
-                  Catch ◇ · Avoid × · Shields ◎ · Pulse clears noise.
+                  Catch ◇ · Avoid × · Three lives. Make them count.
                 </p>
               )}
             </div>
@@ -694,25 +648,6 @@ export default function Home() {
               </button>
               <span>ARROWS / A D / SWIPE</span>
             </div>
-            <button
-              className="pulse-button"
-              disabled={
-                hud.phase !== 'playing' ||
-                hud.mode === 'classic' ||
-                hud.energy < 100
-              }
-              onClick={fire}
-            >
-              <span style={{ width: `${hud.energy}%` }} />
-              <b>
-                ϟ{' '}
-                {hud.mode === 'classic'
-                  ? 'CLASSIC'
-                  : hud.energy >= 100
-                    ? 'PULSE'
-                    : `${hud.energy}%`}
-              </b>
-            </button>
             <button
               className="pause sound-toggle"
               aria-label="8-bit sound"
