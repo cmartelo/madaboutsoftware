@@ -315,7 +315,7 @@ em {
 }
 .game-cards {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 22px;
 }
 .portfolio {
@@ -336,6 +336,11 @@ em {
 .lore {
   background: #b7a2d2;
   color: #302340;
+}
+.signalrun {
+  background: linear-gradient(145deg, #101820 0%, #172114 58%, #25320f 100%);
+  color: #eaffd0;
+  border: 1px solid #566b38;
 }
 .card-meta,
 .card-footer {
@@ -362,6 +367,14 @@ em {
   font-family: Georgia, serif;
   font-weight: 400;
   letter-spacing: -3px;
+}
+.signalrun .wordmark {
+  color: #baff29;
+  letter-spacing: -4px;
+}
+.signalrun .wordmark span {
+  color: #75dcff;
+  text-shadow: 0 0 18px #75dcff80;
 }
 .wordmark span {
   font-size: 68px;

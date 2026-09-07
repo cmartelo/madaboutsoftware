@@ -726,6 +726,23 @@ export default function Home() {
               <span>LOREBOUND.GG ↗</span>
             </div>
           </a>
+          <a
+            className="portfolio signalrun"
+            href="https://signalrun.gg"
+            target="_blank"
+            rel="noreferrer"
+          >
+            <div className="card-meta">
+              MADABOUTSOFTWARE / 03 <span>↗</span>
+            </div>
+            <div className="wordmark">
+              SignalRun<span>ϟ</span>
+            </div>
+            <div className="card-footer">
+              <span>Catch the signal</span>
+              <span>SIGNALRUN.GG ↗</span>
+            </div>
+          </a>
         </div>
       </section>
       <section className="about">
